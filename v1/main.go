@@ -1,25 +1,32 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/binary"
+	"fmt"
 	"log"
 	"net"
-	"bufio"
-	"fmt"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 )
 
-func handleConnection(conn net.Conn) {
-	defer conn.Close() // ensure the connection is closed when done
+const (
+	frameSettings = 0x4
+	frameHeaders  = 0x1
+	frameData     = 0x0
+)
 
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
 	reader := bufio.NewReader(conn)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second)) // set a read deadline, Idle timeout
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second)) // idle timeout
 
 	for {
 		reqLine, err := reader.ReadString('\n')
 		if err != nil {
-			return // close on error or timeout
+			return
 		}
 
 		reqLine = strings.TrimSpace(reqLine)
@@ -47,7 +54,14 @@ func handleConnection(conn net.Conn) {
 			}
 		}
 
-		// read body
+		// upgrade to HTTP/2 if requested
+		if strings.EqualFold(headers["Upgrade"], "h2c") && strings.Contains(headers["Connection"], "Upgrade") {
+			conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"))
+			handleHTTP2(conn, reader, method, path)
+			return
+		}
+
+		// read body if POST
 		body := ""
 		if lengthStr, ok := headers["Content-Length"]; ok && method == "POST" {
 			length, err := strconv.Atoi(lengthStr)
@@ -63,7 +77,7 @@ func handleConnection(conn net.Conn) {
 			body = string(bodyBytes)
 		}
 
-		// handle by method paths
+		// handle request
 		respBody := ""
 		status := "200 OK"
 
@@ -76,20 +90,58 @@ func handleConnection(conn net.Conn) {
 			respBody = "Not Found"
 		}
 
-		// construct response
 		connection := "keep-alive"
-		if headers["Connection"] == "close" {
+		if strings.EqualFold(headers["Connection"], "close") {
 			connection = "close"
 		}
 
-		response := fmt.Sprintf("HTTP/1.1 %s\r\nContent-Length: %d\r\nConnection: %s\r\n\r\n%s", status, len(respBody), connection, respBody)
+		response := fmt.Sprintf("HTTP/1.1 %s\r\nContent-Length: %d\r\nConnection: %s\r\n\r\n%s",
+			status, len(respBody), connection, respBody)
 		conn.Write([]byte(response))
+
 		if connection == "close" {
 			log.Println("Closing connection as per request")
-			return // close the connection if requested
+			return
 		}
-		conn.SetReadDeadline(time.Now().Add(5 * time.Second)) // reset read deadline for keep-alive
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	}
+}
+
+func handleHTTP2(conn net.Conn, reader *bufio.Reader, method, path string) {
+	// expect client preface
+	preface := make([]byte, 24)
+	_, err := reader.Read(preface)
+	if err != nil || !bytes.Equal(preface, []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")) {
+		log.Println("Invalid HTTP/2 preface")
+		return
+	}
+
+	log.Println("HTTP/2 upgrade successful")
+
+	// send SETTINGS frame (empty payload)
+	sendFrame(conn, frameSettings, 0x0, 0, []byte{})
+
+	// for demo, skip real HEADERS parsing. send fixed HEADERS and DATA
+	headersPayload := []byte{0x88} // :status: 200 (compressed with static table)
+	sendFrame(conn, frameHeaders, 0x5, 1, headersPayload) // END_HEADERS | END_STREAM
+
+	dataPayload := []byte("Hello, HTTP/2!")
+	sendFrame(conn, frameData, 0x1, 1, dataPayload) // END_STREAM
+
+	// no further multiplexing for simplicity
+}
+
+func sendFrame(conn net.Conn, typ uint8, flags uint8, streamID uint32, payload []byte) {
+	length := len(payload)
+	frame := make([]byte, 9+length)
+	frame[0] = byte((length >> 16) & 0xff)
+	frame[1] = byte((length >> 8) & 0xff)
+	frame[2] = byte(length & 0xff)
+	frame[3] = typ
+	frame[4] = flags
+	binary.BigEndian.PutUint32(frame[5:9], streamID&0x7fffffff) // clear reserved bit
+	copy(frame[9:], payload)
+	conn.Write(frame)
 }
 
 func main() {
@@ -97,18 +149,16 @@ func main() {
 	if err != nil {
 		log.Fatal("Listen failed:", err)
 	}
-
-	defer listener.Close() // ensure the listener is closed when done
-	log.Println("HTTP/1.0 server listening on :8080")
+	defer listener.Close()
+	log.Println("HTTP server (1.1 + h2c) listening on :8080")
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Printf("Accept error: %v", err)
-			continue // continue to accept next connection
+			continue
 		}
-		go handleConnection(conn) // handle the connection in a goroutine
-		log.Println("Accepted new connection")
-		log.Printf("Connection from %s", conn.RemoteAddr())
+		go handleConnection(conn)
+		log.Println("Accepted connection from", conn.RemoteAddr())
 	}
 }
