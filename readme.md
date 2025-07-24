@@ -1,18 +1,19 @@
 # Basic HTTP Server in Go
 
-This project demonstrates a simple HTTP server in Go, with branches for different HTTP versions.
+This project demonstrates simple HTTP server implementations in Go for different HTTP versions, implemented from scratch using raw `net.Conn` where applicable.
 
 ## Branches
 
-- `main` – HTTP/2 server
-- `http/1` – Raw TCP implementation of HTTP/1.0
-- `http/1.1` – HTTP/1.1 using `net/http`
-- `http/2` – HTTP/2 with h2c (cleartext)
+- `main` – HTTP/2 server with h2c (cleartext upgrade from HTTP/1.1)
+- `http/1` – Basic HTTP/1.0 using raw TCP and manual parsing
+- `http/1.1` – HTTP/1.1 with keep-alive, headers, body parsing, and `Connection: close`
+- `http/2` – HTTP/2 with focus on h2c upgrade and minimal HTTP/2 frame handling
 
 ## Run
 
 ```bash
 go run main.go
+
 ```
 
 ## Tests
