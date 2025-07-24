@@ -1,6 +1,6 @@
 # Basic HTTP Server in Go
 
-This project demonstrates simple HTTP server implementations in Go for different HTTP versions, implemented from scratch using raw `net.Conn` where applicable.
+This project demonstrates simple HTTP server implementations in Go for different HTTP versions, implemented from scratch using raw `net.Conn`.
 
 ## Branches
 
